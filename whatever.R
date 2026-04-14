@@ -28,7 +28,6 @@ library(ggridges)
 
 data <- readRDS("/opt/omicsdata/datasets/SRP047194.rds")
 
-data$sra.sample_attributes 
 
 coldata_list <- lapply(data$sra.sample_attributes, function(x) {
   kv <- strsplit(strsplit(x, "\\|")[[1]], ";;")
@@ -38,43 +37,56 @@ coldata_list <- lapply(data$sra.sample_attributes, function(x) {
   colnames(df) <- keys
   df
 })
+# coldata_list$sample <- colnames(data)
 coldata_df <- do.call(rbind, coldata_list)
 coldata_df <- separate_wider_delim(coldata_df, source_name, delim = ",", names = c("cell-type", "DaIV", "Control"))
 coldata_df <- mutate(coldata_df, DIV = `number of days in vitro in terminal differentiation conditions`)
 coldata_df <- coldata_df |>
   dplyr::select(-`cell type`, -`cell-type`, -`DaIV`, -`number of days in vitro in terminal differentiation conditions`)
 glimpse(coldata_df)
-coldata_df <- mutate_at(coldata_df, "DIV", as.integer)
+coldata_df$sample <- colnames(data)
+coldata_df <- mutate_at(coldata_df, "DIV", as.integer) |>
+  filter(DIV != 0)
+
+
+table(rowSums(assay(data, "raw_counts")) >= 20)
+data <- data[rowSums(assay(data, "raw_counts")) > 20, ]
+data <- data[, colnames(data) %in% coldata_df$sample]
+  
 data$sra.sample_attributes <- coldata_df
 glimpse(data$sra.sample_attributes)
 
 assay(data, "raw_counts")[1:5,1:5]
 # glimpse(colnames(data))
-table(rowSums(assay(data, "raw_counts")) >= 20)
-data <- data[rowSums(assay(data, "raw_counts")) > 20, ]
 
 raw_count <- assay(data, "raw_counts")
 coldata_df <- mutate(coldata_df, factorDIV = factor(DIV))
-col <- coldata_df$factorDIV
+col <- as.factor(coldata_df$Control)
+levels(col) <- c("red","blue")
+col <- as.character(col)
 
 boxplot(log1p(raw_count), col=col, xlab = "Sample", ylab = "log1p expression", ylim = c(0, 20),  las = 2, cex.axis = 0.7)
 limma::plotMA(log1p(raw_count), main = "MA_graph", xlab = "A", ylab = "M")
-MDPlot(raw_count, c(1, 25))
+MDPlot(raw_count, c(1, 7))
 plotRLE(raw_count, outline = FALSE, las = 2,
         ylab = "RLE", main = "RLE of raw counts", col = col)
 
-pca <- prcomp(t(log1p(raw_count))) 
+pca <- prcomp(t(log1p(raw_count)))
 summary(pca)$importance
 autoplot(pca)
+autoplot(pca, data = coldata_df, colour = "Control", main = "Condition colour")
+autoplot(pca, data = coldata_df, colour = "DIV", main = "DIV colour")
 
-t11 <- as.data.frame(pca$x[,c(1,3)])
+t11 <- as.data.frame(pca$x[,c(1,2)])
 t11$subtype <- col
-ggplot(t11, aes(PC1,PC3, color=subtype)) + geom_point()
+ggplot(t11, aes(PC1,PC2, color=subtype)) + geom_point()
 # dfpca <- as.data.frame(pca$x)
 # ggplot(dfpca, aes(PC1,PC3, color=col)) + geom_point()
 
 ensid <- as.character(rowRanges(data)$gene_id)
 ensid <- substr(ensid, 1, 15)
+
+# View(data$gene_id)
 
 gc <- getGeneLengthAndGCContent(id = ensid, org = "hg38", mode = "org.db")
 table(is.na(gc[, 2]))
@@ -83,6 +95,7 @@ rowData(data)$ensid <- ensid
 data <- data[rowData(data)$ensid  %in% rownames(gc), ]
 raw_count <- assay(data, "raw_counts")
 row.names(raw_count) <- row.names(gc)
+
 raw_count
 
 # table(duplicated(row.names(raw_count)))
@@ -94,8 +107,8 @@ set <- newSeqExpressionSet(raw_count,
 set
 
 before <- EDASeq::biasPlot(set, "gc", ylim = c(0, 10), log = TRUE)
-lrt <- log(raw_count[, 1] + 1) - log(raw_count[, 13] + 1)
-biasBoxplot(lrt, gc[, 2], outline = FALSE, xlab = "GC-content", ylab = "Gene expression", las = 2, cex.axis = 0.5)
+lrt <- log(raw_count[, 1] + 1) - log(raw_count[, 13] + 1) # ASK WHY/WHAT WE NEED TO SEE CHANGE
+biasBoxplot(lrt, gc[, 2], outline = FALSE, xlab = "GC-content", ylab = "Gene expression", las = 2, cex.axis = 0.5) 
 
 # 
 
@@ -108,7 +121,7 @@ set_uq <- betweenLaneNormalization(set, which = "upper", offset = TRUE)
 full <- set_full@assayData$normalizedCounts
 uq_edaseq <- set_uq@assayData$normalizedCounts
 
-raw_count <- counts(set)
+# raw_count <- counts(set)
 
 lbs <- calcNormFactors(raw_count, method = "RLE")
 rle <- cpm(raw_count, lib.size = lbs * colSums(raw_count))
@@ -165,13 +178,14 @@ m <- cor(log1p(tmm))
 
 corrplot(m, method = "color", order = 'hclust', tl.cex=0.2)
 
-luad_pca <- prcomp(t(log1p(tmm)))
-tmp <- summary(luad_pca)
+data_pca <- prcomp(t(log1p(tmm)))
+tmp <- summary(data_pca)
 tmp$importance
 
-autoplot(luad_pca)
-screeplot(luad_pca, type = c("lines"))
+autoplot(data_pca)
+screeplot(data_pca, type = c("lines"))
 
+# Review 'cause it doesn't show points
 EDASeq::plotPCA(tc, k=3, labels=F, col=as.numeric(col), pch=20)
 EDASeq::plotPCA(tmm, k=3, labels=F, col=as.numeric(col), pch=20)
 EDASeq::plotPCA(rle, k=3, labels=F, col=as.numeric(col), pch=20)
