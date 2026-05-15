@@ -1,6 +1,6 @@
 ---
-title: "FinishedMarkdown"
-author: "Pietro Boscaratto"
+title: "NGS Project"
+author: "Pietro Boscaratto, Larissa Pereira Moraes"
 date: "2026-05-14"
 output: pdf_document
 ---
@@ -221,7 +221,7 @@ plotRLE(raw_count, outline = FALSE, las = 2,
 
 ...
 
-```{r, figures-side, fig.show='hold', out.width="50%"}
+```{r, fig.show='hold', out.width="50%"}
 # GC content
 par(mar=c(4,4,.1,.1))
 ensid <- as.character(rowRanges(data)$gene_id)
@@ -244,14 +244,14 @@ set <- newSeqExpressionSet(raw_count,
 
 # Before normalization
 
-before <- EDASeq::biasPlot(set, "gc", ylim = c(0, 10), log = TRUE)
+before <- EDASeq::biasPlot(set, "gc", ylim = c(0, 10), log = TRUE, main = "Before Normalization")
 lrt <- log(raw_count[, 1] + 1) - log(raw_count[, 13] + 1)
 
 # withinlanenormalization
 wt <- withinLaneNormalization(set, "gc", which = "upper", offset = TRUE)
 #wt
 
-after <- biasPlot(wt, "gc", ylim = c(0, 10), log = TRUE) # Show them side by side
+after <- biasPlot(wt, "gc", ylim = c(0, 10), log = TRUE, main = "After Normalization") # Show them side by side
 ```
 
 ### Bias Boxplot
@@ -298,31 +298,45 @@ col_numeric <- as.numeric(factor(sample_meta$condition))
 
 #### Boxplots
 
+**Before Normalization**
+
 ```{r}
 boxplot(log2(raw_count + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "Before normalization", xaxt = "n")
 ```
+
+
+**Total Count Normalization**
 
 ```{r}
 boxplot(log2(tc   + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "Total count", xaxt = "n")
 ```
 
+
+**RLE Normalization**
 ```{r}
 boxplot(log2(rle  + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "RLE", xaxt = "n")
 ```
+
+
+**TMM Normalization**
 
 ```{r}
 boxplot(log2(tmm  + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "TMM", xaxt = "n")
 ```
 
+**Upper Quartile Normalization**
+
 ```{r}
 boxplot(log2(uq   + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "Upper quartile", xaxt = "n")
 ```
 
+
+**Full Quantile Normalization**
 ```{r}
 boxplot(log2(full + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "Full quantile", xaxt = "n")
@@ -335,29 +349,41 @@ EDASeq::plotRLE(raw_count, outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "Before normalization", xaxt = "n")
 ```
 
+
+**Total Count**
+
 ```{r}
 EDASeq::plotRLE(tc,   outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "Total count",          xaxt = "n")
 ```
+
+
+**RLE**
 
 ```{r}
 EDASeq::plotRLE(rle,  outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "RLE",                  xaxt = "n")
 ```
 
+**TMM**
+
 ```{r}
 EDASeq::plotRLE(tmm,  outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "TMM",                  xaxt = "n")
 ```
+
+**Upper Quartile**
 
 ```{r}
 EDASeq::plotRLE(uq,   outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "Upper quartile",       xaxt = "n")
 ```
 
+**Full Quantile**
+
 ```{r}
 EDASeq::plotRLE(full, outline = FALSE, las = 2, col = col,
-                ylab = "RLE", main = "Full quantile",        xaxt = "n")
+                ylab = "RLE", main = "Full quantile", xaxt = "n")
 ```
 
 ### Correlation Plots
@@ -380,7 +406,7 @@ asd_pca <- prcomp(t(log1p(tmm)))
 autoplot(asd_pca, data = sample_meta, colour = "condition",
          main = "PCA - TMM, coloured by condition")
 autoplot(asd_pca, data = sample_meta, colour = "days_in_vitro",
-         main = "PCA - TMM, coloured by condition")
+         main = "PCA - TMM, coloured by days in vitro")
 ```
 
 ### PCA with regard to different normalization
@@ -402,7 +428,7 @@ EDASeq::plotPCA(full, k = 3, labels = FALSE, col = col_numeric, pch = 20,
 
 "biological question is to identify the transcriptional differences between ASD vs non-ASD at days 11 vs days 31"
 
-### mean-variance
+### Mean-Variance
 
 ```{r}
 data$sra.sample_attributes <- dplyr::select(data$sra.sample_attributes, days_in_vitro) |>
@@ -438,6 +464,7 @@ de <- tab[tab$FDR <0.05,]
 
 plotMD(res)
 ```
+
 
 #### Volcano Plots
 
@@ -483,6 +510,113 @@ cut <- cutree(g$tree_col, k = 2)
 
 dist_mat <- dist(t(log1p(data_degs)))
 plot(silhouette(cut, dist_mat), col=c("#2E86C1", "#EC7063"), border=NA)
+
+```
+
+
+## Differential Expression Gene Analysis
+
+```{r}
+# Rank differentially expressed genes
+
+top <- topTags(res, n = Inf)$table
+
+# significant genes
+deg <- top[top$FDR <= 0.05,]
+dim(deg)
+
+
+# extract gene ids
+universo <- substr(row.names(top), 1, 15)
+sign <- substr(row.names(deg), 1, 15)
+
+# convert ensembl to entrez id
+universo.entrez <- mapIds(org.Hs.eg.db,
+                          keys = universo,
+                          column = "ENTREZID",
+                          keytype = "ENSEMBL")
+sign.entrez <- mapIds(org.Hs.eg.db,
+                      keys = sign, #Column containing Ensembl gene ids
+                      column = "ENTREZID",
+                      keytype = "ENSEMBL")
+universo.entrez <- as.character(universo.entrez)
+sign.entrez <- as.character(sign.entrez)
+```
+
+
+### KEGG Enrichment Analysis
+
+```{r}
+kk <- enrichKEGG(
+  gene = sign.entrez,
+  universe = universo.entrez,
+  organism = "hsa"
+)
+
+# kegg visualization
+barplot(kk) # Quickly rank terms by the number of genes involved
+dotplot(kk) # Useful when you want to distinguish between a term that is significant but contains few of your genes vs. one where your DEGs dominate the pathway.
+cnetplot(kk) # Useful to see gene overlap between terms and identify multi-pathway genes
+heatplot(kk, showCategory = 10) #Reveals which genes are shared across multiple terms and which are unique to one pathway
+
+```
+
+
+### Pathway Similarity Analysis
+
+
+```{r}
+edo <- pairwise_termsim(kk)
+emapplot(edo)
+upsetplot(edo, 8)
+
+
+ego <- enrichGO(gene = sign.entrez,
+                universe = universo.entrez,
+                OrgDb = 'org.Hs.eg.db',
+                keyType = "ENTREZID",
+                ont = "BP",
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                readable = TRUE)
+
+View(ego@result[1:10,])
+
+barplot(ego)
+upsetplot(ego, 5)
+```
+
+
+### GSEA Analysis
+
+```{r}
+tt <- top$logFC
+names(tt) <- universo.entrez
+
+table(duplicated(names(tt)))
+tt <- tt[!duplicated(names(tt))]
+
+sort_tt <- sort(tt, decreasing = TRUE)
+
+kk2 <- gseKEGG(
+  geneList = sort_tt,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+  
+)
+
+View(kk2@result[, 1:7])
+
+
+kkGO <- gseGO(
+  geneList = sort_tt,
+  ont = "BP",
+  OrgDb = 'org.Hs.eg.db',
+  keyType = "ENTREZID",
+  pAdjustMethod = "BH"
+)
+
+View(kkGO@result[1:10,])
 
 ```
 
