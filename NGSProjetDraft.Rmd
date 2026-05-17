@@ -211,6 +211,8 @@ raw_count <- raw_count[rowSums(raw_count) >= 20, ]
 
 ### RLE Before Normalization
 
+"It's here twice, probably this one is unnecessary"
+
 ```{r}
 # RLE before normalization
 plotRLE(raw_count, outline = FALSE, las = 2,
@@ -315,6 +317,7 @@ boxplot(log2(tc   + 1), outline = FALSE, las = 2, col=col,
 
 
 **RLE Normalization**
+
 ```{r}
 boxplot(log2(rle  + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "RLE", xaxt = "n")
@@ -337,10 +340,12 @@ boxplot(log2(uq   + 1), outline = FALSE, las = 2, col=col,
 
 
 **Full Quantile Normalization**
+
 ```{r}
 boxplot(log2(full + 1), outline = FALSE, las = 2, col=col,
         ylab = "log2(count+1)", main = "Full quantile", xaxt = "n")
 ```
+
 
 #### RLE plots
 
@@ -365,12 +370,14 @@ EDASeq::plotRLE(rle,  outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "RLE",                  xaxt = "n")
 ```
 
+
 **TMM**
 
 ```{r}
 EDASeq::plotRLE(tmm,  outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "TMM",                  xaxt = "n")
 ```
+
 
 **Upper Quartile**
 
@@ -379,12 +386,14 @@ EDASeq::plotRLE(uq,   outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "Upper quartile",       xaxt = "n")
 ```
 
+
 **Full Quantile**
 
 ```{r}
 EDASeq::plotRLE(full, outline = FALSE, las = 2, col = col,
                 ylab = "RLE", main = "Full quantile", xaxt = "n")
 ```
+
 
 ### Correlation Plots
 
@@ -397,6 +406,7 @@ corrplot(m, method = "color", order = "hclust", tl.cex = 0.2,
 colnames(tmm) <- tmm_colnames
 ```
 
+
 ### PCA After Normalization
 
 ```{r}
@@ -408,6 +418,7 @@ autoplot(asd_pca, data = sample_meta, colour = "condition",
 autoplot(asd_pca, data = sample_meta, colour = "days_in_vitro",
          main = "PCA - TMM, coloured by days in vitro")
 ```
+
 
 ### PCA with regard to different normalization
 
@@ -423,6 +434,7 @@ EDASeq::plotPCA(rle,  k = 3, labels = FALSE, col = col_numeric, pch = 20,
 EDASeq::plotPCA(full, k = 3, labels = FALSE, col = col_numeric, pch = 20,
                 main = "PCA - Full quantile")
 ```
+
 
 ## Differential Gene Expression
 
@@ -445,6 +457,7 @@ dge <- estimateDisp(dge, design)
 
 plotMeanVar(dge, show.raw.vars = TRUE, show.ave.raw.vars = F, NBline = TRUE, show.tagwise.vars = TRUE) # Ask why it doesn't fit the grey points
 ```
+
 
 ### Differentially expressed genes
 
@@ -483,11 +496,13 @@ ggplot(tab, aes(x = logFC, y = -log10(PValue), color = sign)) + geom_point() + t
   geom_text_repel(data = tab[1:20, ], aes(label = gene), size = 2.5, max.overlaps = 20) 
 ```
 
+
 #### P-values plot
 
 ```{r}
 hist(tab$PValue, main="p-values distribution")
 ```
+
 
 #### Cluster Analysis
 
@@ -564,7 +579,6 @@ heatplot(kk, showCategory = 10) #Reveals which genes are shared across multiple 
 
 ### Pathway Similarity Analysis
 
-
 ```{r}
 edo <- pairwise_termsim(kk)
 emapplot(edo)
@@ -620,3 +634,34 @@ View(kkGO@result[1:10,])
 
 ```
 
+#### Using LR as the statistical variable (true statistical variable)
+
+```{r}
+test <- top$LR*sign(top$logFC)
+names(test) <- universo.entrez
+
+table(duplicated(names(test)))
+test <- test[!duplicated(names(test))]
+
+sort_test <- sort(test, decreasing = TRUE)
+
+kk2t <- gseKEGG(
+  geneList = sort_test,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+  
+)
+
+View(kk2t@result[, 1:7])
+
+
+kkGOt <- gseGO(
+  geneList = sort_test,
+  ont = "BP",
+  OrgDb = 'org.Hs.eg.db',
+  keyType = "ENTREZID",
+  pAdjustMethod = "BH"
+)
+
+View(kkGOt@result[1:10,])
+```
