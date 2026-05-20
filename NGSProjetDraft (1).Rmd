@@ -100,6 +100,8 @@ filter(sample_meta, days_in_vitro == 11)
 
 ### Sample Distribution
 
+"Showing similar distribution between medical and temporal conditions"
+
 ```{r}
 ggplot(sample_meta, aes(x = condition, fill = condition)) +
   geom_bar() + 
@@ -185,6 +187,8 @@ autoplot(pca, data = sample_meta, colour = "days_in_vitro",
 
 ### MA and MD Plots
 
+"The MA plot should be centered around M=0, the MD plot should be a straight line for all couple of samples"
+
 ```{r}
 # MA plot
 limma::plotMA(log1p(raw_count),
@@ -193,8 +197,10 @@ limma::plotMA(log1p(raw_count),
               ylab = "M")
 
 # MD plot
-MDPlot(raw_count, c(1, 7))
+MDPlot(raw_count, c(1, 13))
 ```
+
+"This is just to check the expression level of one gene across samples"
 
 ```{r}
 table(raw_count<10)
@@ -203,11 +209,11 @@ raw_count[1520,1:42]
 
 ### Low Count Genes Check and Filtering
 
-...
+"We filter to avoid non expressed genes or experimental or systematic errors"
 
 ```{r}
 
-sample_11DIV <- sample_meta |> # Here we take the names for the samples at 31 DIV
+sample_11DIV <- sample_meta |> # Here we take the names for the samples at 11 (or 31) DIV, this is a list of vectors
                   filter(days_in_vitro == 11) |>
                   select_at("sample")
 #View(sample_31DIV)
@@ -216,7 +222,7 @@ sample_31DIV <- sample_meta |>
                   select_at("sample")
 #View(sample_11DIV)
 
-raw_count_11 <- raw_count[, unlist(sample_11DIV)] # Here the gene expression values corresponding to samples at 11 DIV
+raw_count_11 <- raw_count[, unlist(sample_11DIV)] # Here we subset the raw counts keeping only the samples with condition DIV=11 (or 31)
 raw_count_31 <- raw_count[, unlist(sample_31DIV)]
 #View(raw_count_11)
 #View(raw_count_31)
@@ -226,15 +232,13 @@ filtered_raw_count_11 <- raw_count_11[rowSums(raw_count_11 < 20) <= (ncol(raw_co
 #keep_31 <- rowSums(raw_count_31 < 10) <= (ncol(raw_count_31)/2)
 filtered_raw_count_31 <- raw_count_31[rowSums(raw_count_31 < 20) <= (ncol(raw_count_31)/2), ]
 
-common_rows <- intersect(rownames(filtered_raw_count_11), rownames(filtered_raw_count_31))
-filtered_shared_raw_count_11 <- filtered_raw_count_11[common_rows, , drop=FALSE]
-filtered_shared_raw_count_31 <- filtered_raw_count_31[common_rows, , drop=FALSE]
+common_rows <- intersect(rownames(filtered_raw_count_11), rownames(filtered_raw_count_31)) # Here we find only the genes that, after filtering in both conditions, have a significant expression level in both
+#filtered_shared_raw_count_11 <- filtered_raw_count_11[common_rows, , drop=FALSE]
+#filtered_shared_raw_count_31 <- filtered_raw_count_31[common_rows, , drop=FALSE]
 
-raw_count <- raw_count[common_rows,]
+raw_count <- raw_count[common_rows,] # We filter on the original raw counts matrix, keeping all samples but removing genes with too low of an expression level
 
-data_filtered <- data[rownames(raw_count),]
-
-# Now I need to put this into the dataset!!!
+data_filtered <- data[rownames(raw_count),] # We create a copy of the orginal dataset, using only the filtered genes
 
 # check how many genes have all zero counts
 #table(rowSums(raw_count) == 0)
@@ -272,9 +276,9 @@ table(is.na(gc[, 2]))
 
 gc <- gc[!is.na(gc[, 2]), ]
 rowData(data_filtered)$ensid <- ensid
-data_filtered <- data_filtered[rowData(data_filtered)$ensid %in% rownames(gc), ]
-raw_count <- assay(data_filtered, "raw_counts")
-row.names(raw_count) <- row.names(gc)
+data_filtered <- data_filtered[rowData(data_filtered)$ensid %in% rownames(gc), ] # We keep only the genes present in the online dataset
+raw_count <- assay(data_filtered, "raw_counts") # We filter the raw counts variable too
+row.names(raw_count) <- row.names(gc) # We use the new naming convention, to be sure every following step works
 
 set <- newSeqExpressionSet(raw_count,
                            phenoData = AnnotatedDataFrame(data.frame(conditions = factor(1:ncol(raw_count)),
@@ -296,7 +300,7 @@ after <- biasPlot(wt, "gc", ylim = c(0, 12), log = TRUE, main = "After Normaliza
 
 ### Bias Boxplot
 
-...
+"Distribution of the median pretty constant, i guess this is fine"
 
 ```{r}
 biasBoxplot(lrt, gc[, 2], outline = FALSE, xlab = "GC-content", ylab = "Gene expression", las = 2, cex.axis = 0.5)
@@ -440,14 +444,15 @@ tmm_colnames <- colnames(tmm)
 colnames(tmm) <- substr(colnames(tmm), 1, 8)
 m <- cor(log1p(tmm))
 corrplot(m, method = "color", order = "hclust", tl.cex = 0.2,
-         main = "Correlation - TMM", col.lim = c(0.5, 1))
+         main = "Correlation - TMM", col.lim = c(0.5, 1)) # This is the true correlation matrix, it shows high correlation across all samples but it is not clear if there are major differences
 corrplot(m^3, method = "color", order = "hclust", tl.cex = 0.2,
-         main = "Correlation - TMM", col.lim = c(0.5, 1))
-colnames(tmm) <- tmm_colnames
+         main = "Enhanced Correlation", col.lim = c(0.5, 1)) # This is not a real correlation matrix, since we raise every number to the third power, however it allows us to more easily distinguish small value differences
+#colnames(tmm) <- tmm_colnames
 ```
 
-
 ### PCA After Normalization
+
+"This shows clustering with the 11-31 DIV condition and no clustering with ASD-nonASD condition"
 
 ```{r}
 asd_pca <- prcomp(t(log1p(tmm)))
