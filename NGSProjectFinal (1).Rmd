@@ -1,0 +1,847 @@
+---
+title: "Timepoint comparison on neuron differentiation ASD dataset"
+author: "Pietro Boscaratto (2180333), Larissa Pereira Moraes (2183921)"
+date: "2026-05-14"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+The dataset is based on the article FOXG1-Dependent Dysregulation of GABA/Glutamate Neuron Differentiation in Autism Spectrum Disorders (Mariani J, Coppola G, Zhang P, Abyzov A et al., 2015).
+
+Before beginning, we are loading the following libraries that are used for data preprocessing, visualization, differential expression analysis, clustering, pathway enrichment, and reproducible reporting of RNA-seq data.
+
+-   **Data manipulation and cleaning**: tidyverse, dplyr, tidyr, plyr, readr
+-   **Data visualization**: ggplot2, corrplot, ggfortify, ggrepel, pheatmap, ggnewscale, ggupset, ggridges, enrichplot, EnhancedVolcano
+-   **RNA-seq and differential expression analysis**: limma, edgeR, DESeq2, EDASeq, genefilter, apeglm
+-   **Functional enrichment and pathway analysis**: clusterProfiler, ReactomePA, pathview
+-   **Biological annotation databases**: AnnotationDbi, org.Hs.eg.db
+-   **Clustering and statistical analysis**: cluster
+-   **Reporting and reproducibility**: knitr
+
+```{r setup, include=FALSE, message=FALSE}
+library(tidyr)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(omicsdata)
+library(limma)
+library(EDASeq)
+library(edgeR)
+library(dplyr)
+library(plyr)
+library(corrplot)
+library(ggfortify)
+library(genefilter)
+library(ggrepel)
+library(pheatmap)
+library(cluster)
+library(knitr)
+library(DESeq2)
+library(clusterProfiler)
+library(pathview)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ReactomePA)
+library(enrichplot)
+library(ggnewscale)
+library(ggupset)
+library(ggridges)
+library(apeglm)
+library(EnhancedVolcano)
+```
+
+## Loading and Preprocessing
+
+The dataset was loaded as a SummarizedExperiment object, and the sample metadata was extracted and reorganized into a tidy format. Sample attributes were separated into individual variables, allowing easier manipulation and analysis. A new variable identifying ASD and non-ASD samples was created based on the source information, while unnecessary columns were removed and variables renamed for clarity. Samples with zero days in vitro were excluded, and genes with very low counts were filtered out to reduce noise in downstream analyses. Finally, the processed metadata was reassigned to the dataset for consistency.
+
+```{r}
+data <- readRDS("/opt/omicsdata/datasets/SRP047194.rds")
+
+# extract raw strings into data frame
+raw <- data.frame(
+  sample = colnames(data), 
+  raw_attr = as.character(data$sra.sample_attributes)
+)
+
+# split key-value pairs for attributes and attribute values
+tidy_attr <- raw %>%
+  separate_rows(raw_attr, sep = "\\|") %>%
+  separate(raw_attr, into = c("key", "value"),
+           sep = ";;", fill = "right") %>%
+  mutate(key = str_trim(key),
+         value = str_trim(value))
+
+# pivot wider so each attribute becomes its own column
+# modifying last attribute to specify ASD or Non-ASD and remove redundant data
+sample_meta <- tidy_attr %>%
+  pivot_wider(names_from = key, values_from = value) %>%
+  mutate(condition = if_else(str_detect(source_name, "non-ASD"), "non-ASD", "ASD")) %>%
+  dplyr::select(-source_name, -`cell type`) %>%
+  dplyr::rename(days_in_vitro = `number of days in vitro in terminal differentiation conditions`) %>%
+  filter(days_in_vitro != 0)
+
+# exploratory data analysis
+
+# how many samples per condition
+sample_meta <- sample_meta %>%
+  mutate(days_in_vitro = as.numeric(days_in_vitro))
+
+# filter raw count inside summarized experiment
+
+data <- data[rowSums(assay(data, "raw_counts")) > 20, ]  # Is this necessary, since we do the filtering afterwards?
+
+# only samples present in sample_meta
+data <- data[, colnames(data) %in% sample_meta$sample]
+
+# replace sample_attributes inside data
+
+data$sra.sample_attributes <- sample_meta
+
+filter(sample_meta, days_in_vitro == 11)
+```
+
+## Exploratory Data Analysis
+
+Exploratory data analysis (EDA) was performed to examine the structure and distribution of the samples before differential expression analysis.
+
+### Sample Distribution
+
+The sample distribution plot shows the number of ASD and non-ASD samples across the different days in vitro. This step was used to verify the balance of samples between conditions and timepoints prior to downstream analyses.
+
+```{r}
+ggplot(sample_meta, aes(x = condition, fill = condition)) +
+  geom_bar() + 
+  facet_wrap(~ days_in_vitro, labeller = label_both) + 
+  labs(
+    title = "Sample distribution by condition and timepoint",
+    x = "Condition",
+    y = "Number of sample"
+  ) +
+  theme_minimal()
+```
+
+### Log-transformed Boxplots
+
+Log transformation was applied to stabilize the data by reducing the effect of extreme values and high variability. This makes the samples more comparable by compressing large differences in raw counts, which is especially important in RNA-seq data where expression values are highly skewed.
+
+```{r}
+# log-transformed
+col <- factor(sample_meta$condition)
+levels(col) <- c("red", "blue")
+col <- as.character(col)
+
+raw_count <- assay(data, "raw_counts")
+
+par(mfrow = c(1, 1))
+
+boxplot(log1p(raw_count),
+        main = "Log-transformed counts",
+        ylab = "log1p counts",
+        las = 2,
+        cex.axis = 0.7,
+        col = col)
+
+legend("topright",
+       legend = c("ASD", "non-ASD"),
+       fill = c("red", "blue"))
+```
+
+### RLE
+
+RLE can be considered “not ideal” for raw data because it is very sensitive to unwanted technical variation. If samples have differences due to sequencing depth, batch effects, or other artifacts, the RLE plot will reflect that strongly, sometimes making it hard to distinguish biological signal from technical noise.
+
+In other words, it doesn’t “fix” the data, it mainly reveals problems, and with unprocessed counts those problems often look exaggerated.
+
+```{r}
+plotRLE(raw_count,
+        outline = FALSE,
+        las = 2,
+        ylab = "RLE",
+        main = "RLE of raw counts",
+        col = col,
+        cex.axis = 0.5)
+
+legend("topright",
+       legend = c("ASD", "non-ASD"),
+       fill = c("red", "blue"))
+
+# Check outlier samples
+rle_matrix <- log1p(raw_count) - rowMedians(log1p(raw_count))
+rle_medians <- colMedians(rle_matrix)
+
+# Find samples that deviate most from zero
+names(rle_medians) <- colnames(raw_count)
+```
+
+### PCA
+
+PCA was used to reduce the dimensionality of the dataset and explore overall patterns between samples. Using the raw (log-transformed) counts, the first principal components do not clearly separate samples by condition (ASD vs non-ASD) and by timepoint.
+
+```{r, message=FALSE, warning=FALSE}
+pca <- prcomp(t(log1p(raw_count)))
+
+autoplot(pca, data = sample_meta, colour = "condition", 
+         main = "PCA colored by condition")
+
+autoplot(pca, data = sample_meta, colour = "days_in_vitro",
+         main = "PCA colored by timepoint")
+```
+
+### MA and MD Plots
+
+MA plots were utilized to visualize the relationship between the log2 fold change between conditions (ASD vs non-ASD) and the average gene expression levels across samples. This allows the identification of genes with large expression differences and potential intensity-dependent biases.
+
+MD plots were utilized to visualize the log fold change between two selected samples against their average expression levels, helping assess variability and systematic differences within the dataset.
+
+```{r}
+limma::plotMA(log1p(raw_count),
+              main = "MA plot",
+              xlab = "A",
+              ylab = "M")
+
+MDPlot(raw_count, c(1, 7))
+```
+
+### Low Count Genes Check and Filtering
+
+Lowly expressed genes were filtered to reduce noise and improve the reliability of downstream analyses. Samples were first separated according to their differentiation timepoints (11 DIV and 31 DIV), and genes with counts below 20 in more than half of the samples were removed for each group.
+
+Only genes shared between both filtered datasets were retained, ensuring consistent comparison across timepoints. The filtered gene set was then used to create the final dataset for subsequent analyses.
+
+```{r}
+
+# Day 11
+sample_11DIV <- sample_meta |> 
+                  filter(days_in_vitro == 11) |>
+                  select_at("sample")
+# Day 31
+sample_31DIV <- sample_meta |>
+                  filter(days_in_vitro == 31) |>
+                  select_at("sample")
+
+raw_count_11 <- raw_count[, unlist(sample_11DIV)]
+raw_count_31 <- raw_count[, unlist(sample_31DIV)]
+
+
+filtered_raw_count_11 <- raw_count_11[rowSums(raw_count_11 < 20) <= (ncol(raw_count_11)/2), ] 
+
+filtered_raw_count_31 <- raw_count_31[rowSums(raw_count_31 < 20) <= (ncol(raw_count_31)/2), ]
+
+common_rows <- intersect(rownames(filtered_raw_count_11), rownames(filtered_raw_count_31))
+filtered_shared_raw_count_11 <- filtered_raw_count_11[common_rows, , drop=FALSE]
+filtered_shared_raw_count_31 <- filtered_raw_count_31[common_rows, , drop=FALSE]
+
+raw_count <- raw_count[common_rows,]
+
+data_filtered <- data[rownames(raw_count),] 
+```
+
+## Normalization
+
+Normalization was performed to correct for technical biases that can affect gene expression measurements, such as GC-content effects and sequencing-related variability. Gene GC content and length information were retrieved and matched to the expression data to allow bias correction.
+
+A `SeqExpressionSet` object was created to integrate expression values with gene-level annotations. GC-content bias was then assessed visually before and after normalization using bias plots.
+
+Within-lane normalization was applied to reduce systematic bias, improving comparability of expression levels across genes and samples and producing a more reliable dataset for downstream analysis.
+
+```{r, fig.height=7, fig.show="hold", out.width="50%"}
+# GC content
+par(mar=c(4,4,.1,.1))
+ensid <- as.character(rowRanges(data_filtered)$gene_id)
+ensid <- substr(ensid, 1, 15)
+
+gc <- getGeneLengthAndGCContent(id = ensid, org = "hg38", mode = "org.db")
+table(is.na(gc[, 2]))
+
+gc <- gc[!is.na(gc[, 2]), ]
+rowData(data_filtered)$ensid <- ensid
+data_filtered <- data_filtered[rowData(data_filtered)$ensid %in% rownames(gc), ]
+raw_count <- assay(data_filtered, "raw_counts")
+row.names(raw_count) <- row.names(gc)
+
+set <- newSeqExpressionSet(raw_count,
+                           phenoData = AnnotatedDataFrame(data.frame(conditions = factor(1:ncol(raw_count)),
+                                                                     row.names = colnames(raw_count))),
+                           featureData = AnnotatedDataFrame(data.frame(gc = gc[, 2], l = gc[, 1])))
+
+# Before normalization
+
+before <- EDASeq::biasPlot(set, "gc", ylim = c(0, 12), log = TRUE, main = "Before Normalization")
+
+lrt <- log(raw_count[, 1] + 1) - log(raw_count[, 13] + 1)
+
+# withinlanenormalization
+wt <- withinLaneNormalization(set, "gc", which = "upper", offset = TRUE)
+
+after <- biasPlot(wt, "gc", ylim = c(0, 12), log = TRUE, main = "After Normalization")
+
+```
+
+### Bias Boxplot
+
+We used the bias boxplot to evaluate whether gene expression levels are affected by GC-content before or after normalization. It groups genes by GC-content and shows how expression values vary across these groups.
+
+```{r}
+biasBoxplot(lrt, gc[, 2], outline = FALSE, xlab = "GC-content", ylab = "Gene expression", las = 2, cex.axis = 0.5)
+```
+
+### Between Lane Normalization
+
+#### Calculations
+
+Different between-lane normalization methods were applied to reduce technical variability between samples and improve comparability of expression values.
+
+Using `EDASeq`, full quantile and upper-quartile normalization methods were performed. In addition, `edgeR` normalization approaches, including RLE, TMM, and upper-quartile normalization, were applied to account for differences in library size and sequencing depth. Counts per million (CPM) values were then calculated for downstream evaluation and visualization of the normalized data.
+
+```{r}
+# EDASeq between-sample
+set_full <- betweenLaneNormalization(set, which = "full",  offset = TRUE)
+set_uq   <- betweenLaneNormalization(set, which = "upper", offset = TRUE)
+full      <- set_full@assayData$normalizedCounts
+uq_edaseq <- set_uq@assayData$normalizedCounts
+
+# edgeR
+
+lbs <- normLibSizes(raw_count, method = "RLE")
+rle <- cpm(raw_count, lib.size = lbs * colSums(raw_count))
+
+lbs <- normLibSizes(raw_count, method = "TMM")
+tmm <- cpm(raw_count, lib.size = lbs * colSums(raw_count))
+
+lbs <- normLibSizes(raw_count, method = "upperquartile")
+uq  <- cpm(raw_count, lib.size = lbs * colSums(raw_count))
+
+tc  <- cpm(raw_count)
+
+# PLOTS EVALUATION
+
+col <- factor(sample_meta$condition)
+levels(col) <- c("red", "blue")
+col <- as.character(col)
+col_numeric <- as.numeric(factor(sample_meta$condition))
+```
+
+#### Boxplots
+
+**Before Normalization**
+
+Before normalization, the samples show noticeable variability in their expression distributions and are not fully standardized around the same median values. Most samples are centered around a log2 expression value of approximately 15, but differences in spread and distribution suggest the presence of technical variation between samples.
+
+```{r}
+boxplot(log2(raw_count + 1), outline = FALSE, las = 2, col=col,
+        ylab = "log2(count+1)", main = "Before normalization", xaxt = "n")
+```
+
+**Total Count Normalization**
+
+Total count normalization adjusts each sample based on its overall library size (total number of reads). This corrects for differences in sequencing depth, allowing samples with different total counts to be compared on a more consistent scale.
+
+```{r}
+boxplot(log2(tc   + 1), outline = FALSE, las = 2, col=col,
+        ylab = "log2(count+1)", main = "Total count", xaxt = "n")
+```
+
+**RLE Normalization**
+
+RLE (Relative Log Expression) normalization scales samples so that the median gene expression is consistent across all samples. This helps reduce unwanted technical variation by assuming most genes are not differentially expressed.
+
+```{r}
+boxplot(log2(rle  + 1), outline = FALSE, las = 2, col=col,
+        ylab = "log2(count+1)", main = "RLE", xaxt = "n")
+```
+
+**TMM Normalization**
+
+TMM (Trimmed Mean of M-values) normalization corrects for compositional differences between samples by removing extreme expression values and focusing on the majority of genes. This makes comparisons more robust when a small number of genes are highly expressed.
+
+```{r}
+boxplot(log2(tmm  + 1), outline = FALSE, las = 2, col=col,
+        ylab = "log2(count+1)", main = "TMM", xaxt = "n")
+```
+
+**Upper Quartile Normalization**
+
+Upper quartile normalization scales samples based on the upper quartile of gene expression values, reducing the influence of extremely high or low counts while improving comparability across samples.
+
+```{r}
+boxplot(log2(uq   + 1), outline = FALSE, las = 2, col=col,
+        ylab = "log2(count+1)", main = "Upper quartile", xaxt = "n")
+```
+
+**Why not Full Quantile Normalization**
+
+Full quantile normalization was not used because it forces all samples to have identical distributions, which can artificially remove real biological differences. While it makes data look “perfectly aligned,” it can over-correct and potentially distort true biological variation.
+
+#### RLE plots
+
+Only RLE and TMM were kept for evaluation because they gave the most realistic and interpretable corrections. Other methods were either not effective at removing visible technical variation or produced overly uniform distributions that looked artificially “perfect,” which can indicate over-normalization and loss of biological signal. RLE and TMM strike a better balance by reducing bias while still preserving meaningful differences between samples.
+
+```{r}
+EDASeq::plotRLE(raw_count, outline = FALSE, las = 2, col = col,
+                ylab = "RLE", main = "Before normalization", xaxt = "n")
+```
+
+**RLE**
+
+```{r}
+EDASeq::plotRLE(rle,  outline = FALSE, las = 2, col = col,
+                ylab = "RLE", main = "RLE",                  xaxt = "n")
+```
+
+**TMM**
+
+```{r}
+EDASeq::plotRLE(tmm,  outline = FALSE, las = 2, col = col,
+                ylab = "RLE", main = "TMM",                  xaxt = "n")
+```
+
+### Correlation Plots
+
+Correlation plots were used to assess overall similarity between samples after normalization. High correlation values suggest that samples have consistent expression profiles, indicating reduced technical noise and improved comparability.
+
+In the TMM-normalized data, correlations are generally high, which is expected after effective normalization. This indicates that samples are more aligned in their global expression patterns, while still preserving meaningful biological variation.
+
+```{r}
+tmm_colnames <- colnames(tmm)
+m <- cor(log1p(tmm))
+corrplot(m, method = "color", order = "hclust", tl.cex = 0.2,
+         main = "", col.lim = c(0.5, 1))
+title(main = "True Correlation - TMM",
+      line = 3)
+corrplot(m^3, method = "color", order = "hclust", tl.cex = 0.2,
+         main = "", col.lim = c(0.5, 1))
+title(main = "Graphical Enhancement",
+      line = 3)
+colnames(tmm) <- tmm_colnames
+```
+
+### PCA After Normalization
+
+PCA was applied to the TMM-normalized data to evaluate whether normalization improved the separation of biological groups. After normalization, samples still do not cluster clearly by condition (ASD vs non-ASD), suggesting that condition is not the main source of variation in the dataset.
+
+However, samples show a clearer separation by timepoint (days in vitro), with only a few outliers. This indicates that developmental stage is a stronger driver of global expression differences than condition in this dataset.
+
+```{r}
+asd_pca <- prcomp(t(log1p(tmm)))
+
+autoplot(asd_pca, data = sample_meta, colour = "condition",
+         main = "PCA - TMM, coloured by condition")
+autoplot(asd_pca, data = sample_meta, colour = "days_in_vitro",
+         main = "PCA - TMM, coloured by days in vitro")
+```
+
+## Differential Gene Expression
+
+### Mean-Variance
+
+A design matrix was created using days in vitro to model transcriptional differences between conditions and timepoints. A negative binomial model was then fitted using TMM-normalized counts to account for overdispersion in RNA-seq data.
+
+The mean–variance plot was used to assess whether the dispersion estimates from the model appropriately capture the relationship between mean expression and variability. Deviations between observed points and the fitted trend indicate genes with higher or lower variability than expected under the model.
+
+```{r, warning = FALSE}
+data_filtered$sra.sample_attributes <- dplyr::select(data_filtered$sra.sample_attributes, days_in_vitro) |>
+  unlist() |>
+  as.character()
+
+design <- model.matrix(~sra.sample_attributes, data = colData(data_filtered))
+
+dge <- DGEList(raw_count)
+
+dge <- normLibSizes(dge, method="TMM")
+dge <- estimateDisp(dge, design)
+
+plotMeanVar(dge, show.raw.vars = TRUE, show.ave.raw.vars = F, NBline = TRUE, show.tagwise.vars = TRUE)
+```
+
+### Differentially expressed genes
+
+Differential expression was performed using a generalized linear model with likelihood ratio testing. This identifies genes whose expression significantly differs between groups defined in the design matrix. Significant genes were selected based on FDR \< 0.05, and their expression changes were summarized using log fold change and statistical significance.
+
+```{r, message=FALSE}
+fit <- glmFit(dge, design)
+
+res <- glmLRT(fit, coef = 2)
+
+tab <- topTags(res, n=Inf)
+tab <- tab$table
+
+de <- tab[tab$FDR <0.05,]
+
+plotMD(res, main="DEG regulation")
+```
+
+#### Volcano Plots
+
+The volcano plot visualizes differential expression results by plotting log fold change against statistical significance. Genes with large expression changes and strong statistical support are highlighted as significantly up- or down-regulated, while non-significant genes cluster near the center.
+
+```{r}
+names <- row.names(de)
+
+tab$sign <- NA
+tab$sign[tab$logFC < 0] <- "Down"
+tab$sign[tab$logFC > 0] <- "Up"
+tab$sign[tab$FDR >= 0.05] <- "NoSig"
+tab$gene <- rownames(tab)
+
+ggplot(tab, aes(x = logFC, y = -log10(PValue), color = sign)) + geom_point() + theme_classic() +
+  scale_color_manual(values = c("Down" = "blue", "Up" = "red", "NoSig" = "black")) +
+  geom_text_repel(data = tab[1:20, ], aes(label = gene), size = 2.5, max.overlaps = 20) 
+```
+
+#### P-values plot
+
+The p-value histogram was used to evaluate the overall signal in the data. A non-uniform distribution, with enrichment of low p-values, suggests the presence of genuinely differentially expressed genes.
+
+```{r}
+hist(tab$PValue, main="p-values distribution", xlab = "p-value")
+```
+
+#### Cluster Analysis {#clusteranalysis}
+
+Cluster analysis was performed on the most significant differentially expressed genes to evaluate whether samples naturally group according to biological factors. Hierarchical clustering and heatmaps were used to visualize expression patterns, while silhouette analysis was applied to assess cluster quality and separation.
+
+```{r}
+# cluster analysis
+
+data_degs <- tmm[names, ]
+
+
+Col <- data.frame(Subtype=data_filtered$sra.sample_attributes)
+rownames(Col) <- colnames(data_filtered)
+
+ann_colors = list(Subtype = c("11"="blue","31"="lightblue"))
+
+g <- pheatmap(log1p(data_degs), show_colnames = FALSE, scale = "row", show_rownames = FALSE,
+              drop_levels = TRUE, annotation_colors = ann_colors, annotation_col = Col)
+
+cut <- cutree(g$tree_col, k = 2)
+
+dist_mat <- dist(t(log1p(data_degs)))
+plot(silhouette(cut, dist_mat), col=c("#2E86C1", "#EC7063"), border=NA)
+```
+
+We instead clearly see that if we account for condition the accordance to real information is very poor.
+
+```{r}
+Col_ASD <- data.frame(Subtype=sample_meta$condition)
+rownames(Col_ASD) <- colnames(data_filtered)
+ann_colors_ASD = list(Subtype = c("ASD"="blue","non-ASD"="lightblue"))
+
+f <- pheatmap(log1p(data_degs), show_colnames = FALSE, scale = "row", show_rownames = FALSE,
+              drop_levels = TRUE, annotation_colors = ann_colors_ASD, annotation_col = Col_ASD)
+cut_ASD <- cutree(f$tree_col, k = 2)
+dist_mat_ASD <- dist(t(log1p(data_degs)))
+plot(silhouette(cut_ASD, dist_mat_ASD), col=c("#2E86C1", "#EC7063"), border=NA)
+```
+
+## Differential Expression Gene Analysis
+
+Differentially expressed genes were ranked using likelihood ratio test results, and significant genes were selected based on an FDR threshold of 0.05. Gene identifiers were converted from Ensembl to Entrez IDs to enable downstream functional enrichment analysis.
+
+```{r, warning=FALSE}
+top <- topTags(res, n = Inf)$table
+
+deg <- top[top$FDR <= 0.05,]
+dim(deg)
+
+
+universo <- substr(row.names(top), 1, 15)
+sign <- substr(row.names(deg), 1, 15)
+
+universo.entrez <- mapIds(org.Hs.eg.db,
+                          keys = universo,
+                          column = "ENTREZID",
+                          keytype = "ENSEMBL")
+sign.entrez <- mapIds(org.Hs.eg.db,
+                      keys = sign, 
+                      column = "ENTREZID",
+                      keytype = "ENSEMBL")
+universo.entrez <- as.character(universo.entrez)
+sign.entrez <- as.character(sign.entrez)
+```
+
+### KEGG Enrichment Analysis
+
+KEGG pathway enrichment was performed to identify biological pathways overrepresented among the significant genes. Multiple visualization methods (barplot, dotplot, cnetplot, and heatplot) were used to explore pathway significance, gene overlap, and shared genes across pathways.
+
+```{r, warning=FALSE}
+kk <- enrichKEGG(
+  gene = sign.entrez,
+  universe = universo.entrez,
+  organism = "hsa"
+)
+
+barplot(kk)
+dotplot(kk)
+heatplot(kk, showCategory = 10) 
+
+edo <- pairwise_termsim(kk)
+obj <- upsetplot(edo, 8)
+obj
+
+```
+
+### Pathway Similarity Analysis
+
+Pairwise similarity between enriched pathways was computed to identify related functional groups. Network-based visualizations (upsetplot) was used to highlight pathway clustering and shared gene contributions.
+
+Gene Ontology (GO) enrichment was performed for Biological Process terms to identify functional categories associated with the differentially expressed genes. Results were summarized using barplots and upset plots to highlight key biological themes.
+
+```{r, warning=FALSE}
+edo <- pairwise_termsim(kk)
+upsetplot(edo, 8)
+
+ego <- enrichGO(gene = sign.entrez,
+                universe = universo.entrez,
+                OrgDb = 'org.Hs.eg.db',
+                keyType = "ENTREZID",
+                ont = "BP",
+                pvalueCutoff = 0.05,
+                pAdjustMethod = "BH",
+                readable = TRUE)
+
+barplot(ego)
+upsetplot(ego, 5)
+```
+
+## GSEA Analysis
+
+Gene Set Enrichment Analysis (GSEA) was performed using a ranked list of genes based on log fold change. This approach considers all genes rather than only significant ones, allowing detection of subtle but coordinated pathway-level changes.
+
+```{r, warning=FALSE}
+tt <- top$logFC
+names(tt) <- universo.entrez
+
+table(duplicated(names(tt)))
+tt <- tt[!duplicated(names(tt))]
+
+sort_tt <- sort(tt, decreasing = TRUE)
+
+kk2 <- gseKEGG(
+  geneList = sort_tt,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+  
+)
+
+kkGO <- gseGO(
+  geneList = sort_tt,
+  ont = "BP",
+  OrgDb = 'org.Hs.eg.db',
+  keyType = "ENTREZID",
+  pAdjustMethod = "BH"
+)
+
+```
+
+#### Using LR as the statistical variable (true statistical variable)
+
+An additional GSEA was performed using the likelihood ratio statistic as the ranking metric, which better reflects statistical strength of differential expression. This provides a more robust view of pathway enrichment driven by true model-based significance.
+
+```{r, warning=FALSE}
+test <- top$LR*sign(top$logFC)
+names(test) <- universo.entrez
+
+table(duplicated(names(test)))
+test <- test[!duplicated(names(test))]
+
+sort_test <- sort(test, decreasing = TRUE)
+
+kk2t <- gseKEGG(
+  geneList = sort_test,
+  organism = "hsa",
+  pvalueCutoff = 0.05
+  
+)
+
+
+kkGOt <- gseGO(
+  geneList = sort_test,
+  ont = "BP",
+  OrgDb = 'org.Hs.eg.db',
+  keyType = "ENTREZID",
+  pAdjustMethod = "BH"
+)
+```
+
+## Testing Biocondunctor Packages
+
+### DEG Analysis version 2
+
+#### Package 1: DESeq2
+
+DESeq2 is a widely used framework for RNA-seq differential expression analysis based on negative binomial models. It handles normalization, dispersion estimation, and statistical testing in a unified pipeline.
+
+Compared to what we used (edgeR + manual design + GLM), DESeq2 provides a more “all-in-one” workflow with strong built-in normalization (size factors) and robust dispersion shrinkage, offering faster computation and a more straightforward pipeline. In practice, both methods often give similar biological results, as is our case, which shows the accuracy of our pipeline.
+
+```{r, message=FALSE}
+
+colData(data_filtered)$timepoint <- factor(colData(data_filtered)$sra.sample_attributes)
+dds <- DESeqDataSet(data_filtered, design = ~ timepoint)
+
+all(assay(dds, "counts") == assay(data_filtered, "raw_counts")) 
+
+dds <- DESeq(dds)
+
+plotDispEsts(dds)
+
+```
+
+```{r}
+res <- results(dds,
+               contrast = c("timepoint", "11", "31"),
+               alpha = 0.05)
+
+summary(res)
+
+hist(res[order(res$padj), ]$pvalue, main="p-values distribution", xlab = "p-value")
+```
+
+#### Package 2: apeglm
+
+apeglm is used for log fold change shrinkage after differential expression testing (typically with DESeq2). It improves logFC estimates by shrinking extreme values toward zero, especially for low-count or noisy genes.
+
+Compared to our current approach (raw logFC from GLM in edgeR), apeglm produces more conservative and biologically realistic effect sizes. This makes rankings and visualizations (like volcano plots) more stable and less dominated by exaggerated fold changes from low-expression genes.
+
+Reference section Cluster Analysis
+
+```{r}
+res_shrunk <- lfcShrink(dds,
+                        coef = "timepoint_31_vs_11",
+                        type = "apeglm")
+```
+
+**MA Plot**
+
+Blue dots represent significantly differentially expressed genes, while triangles indicate potential outliers or genes with extremely large differential expression values. Without applying res_shrunk (log fold change shrinkage), the MA plot would appear much more dispersed due to inflated fold change estimates, particularly for low-count genes.
+
+```{r}
+plotMA(dds, ylim = c(-5, 5), main = "MA Plot Before Shrinkage")
+plotMA(res_shrunk, ylim = c(-5, 5), main = "MA Plot (DESeq2 Shrinkage Results)")
+```
+
+#### Package 3: Enhanced Volcano
+
+```{r fig.width=7, fig.height=6, out.width='80%', fig.align='center', warning=FALSE}
+EnhancedVolcano(res_shrunk,
+                lab = rownames(res_shrunk),
+                x = "log2FoldChange",
+                y = "pvalue")
+```
+
+### GSEA Analysis version 2
+
+#### Gene Set Analysis using the new DEG
+
+```{r, warning=FALSE}
+rownames(res_shrunk) <- gsub("\\..*", "", rownames(res_shrunk))
+gene_mapping <- bitr(rownames(res_shrunk),
+                     fromType = "ENSEMBL",
+                     toType   = c("ENTREZID", "SYMBOL"),
+                     OrgDb    = org.Hs.eg.db)
+
+res_df <- as.data.frame(res_shrunk) |>
+  tibble::rownames_to_column("ENSEMBL") |>
+  dplyr::left_join(gene_mapping, by = "ENSEMBL") |>
+  tidyr::drop_na(ENTREZID, log2FoldChange, padj)
+
+sig_genes <- res_df |>
+  dplyr::filter(padj < 0.05, abs(log2FoldChange) > 1) |>
+  dplyr::pull(ENTREZID)
+
+universe <- res_df$ENTREZID
+
+ora_go <- enrichGO(gene         = sig_genes,
+                   universe     = universe,
+                   OrgDb        = org.Hs.eg.db,
+                   ont          = "BP",      
+                   pAdjustMethod = "BH",
+                   pvalueCutoff  = 0.05,
+                   qvalueCutoff  = 0.2,
+                   readable     = TRUE)
+
+ora_kegg <- enrichKEGG(gene         = sig_genes,
+                       universe     = universe,
+                       organism     = "hsa",  
+                       pAdjustMethod = "BH",
+                       pvalueCutoff  = 0.05)
+
+ranked <- res_df |>
+  dplyr::arrange(dplyr::desc(log2FoldChange)) |>
+  dplyr::mutate(rank_stat = sign(log2FoldChange) * -log10(pvalue)) |>
+  dplyr::distinct(ENTREZID, .keep_all = TRUE)
+
+gene_list <- setNames(ranked$rank_stat, ranked$ENTREZID)
+
+gsea_go <- gseGO(geneList     = gene_list,
+                 OrgDb        = org.Hs.eg.db,
+                 ont          = "BP",
+                 minGSSize    = 15,
+                 maxGSSize    = 500,
+                 pAdjustMethod = "BH",
+                 pvalueCutoff  = 0.05,
+                 verbose      = FALSE)
+
+gsea_kegg <- gseKEGG(geneList     = gene_list,
+                     organism     = "hsa",
+                     minGSSize    = 15,
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.05,
+                     verbose      = FALSE)
+```
+
+Plots for representing the enrich results
+
+```{r}
+barplot(ora_kegg)
+dotplot(ora_kegg)
+heatplot(ora_kegg, showCategory = 10) 
+
+edo_orak <- pairwise_termsim(ora_kegg)
+obj_orak <- upsetplot(edo, 8)
+obj_orak
+```
+
+```{r, fig.width = 10, fig.height = 10}
+dotplot(gsea_go,   showCategory = 10, split = ".sign") + facet_grid(. ~ .sign)
+dotplot(gsea_kegg, showCategory = 10, split = ".sign") + facet_grid(. ~ .sign)
+```
+
+```{r}
+gseaplot2(gsea_kegg, geneSetID = 1:5)
+```
+
+**Comparison of GSEA Results**
+
+```{r}
+kegg_original <- inner_join(
+  kk2@result[,], kk2t@result[,], by = c("ID", "Description")
+)
+
+kegg_new <- inner_join(
+  gsea_kegg@result[,], ora_kegg@result[,], by=c("ID", "Description")
+)
+
+kegg_total <- inner_join(
+  kegg_original, kegg_new, by=c("ID", "Description")
+)
+
+
+GO_original <- inner_join(
+  ego@result[,], kkGO@result[,], by=c("ID", "Description")
+)
+
+GO_original <- inner_join(
+  GO_original[,], kkGOt@result[,], by=c("ID", "Description")
+)
+
+GO_new <- inner_join(
+  ora_go@result[,], gsea_go@result[,], by=c("ID", "Description")
+)
+
+GO_total <- inner_join(
+  GO_original[,], GO_new[,], by=c("ID", "Description")
+)
+```
