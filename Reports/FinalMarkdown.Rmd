@@ -1,6 +1,6 @@
 ---
 title: "Timepoint comparison on neuron differentiation ASD dataset"
-author: "Pietro Boscaratto (2180333), Larissa Pereira Moraes (2183921)"
+author: "Pietro Boscaratto, Larissa P. Moraes"
 date: "2026-05-14"
 output:
   html_document:
